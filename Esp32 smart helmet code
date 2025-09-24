@@ -1,0 +1,205 @@
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+#include <WiFi.h>
+#include <DHT.h>
+
+// Wi-Fi credentials
+const char* ssid = "Batwomen";
+const char* password = "12345679";
+
+// GPS module setup
+TinyGPSPlus gps;
+#define RX_PIN 16  // GPS TX -> ESP32 RX
+#define TX_PIN 17  // GPS RX -> ESP32 TX
+HardwareSerial gpsSerial(1);
+
+// DHT sensor setup
+#define DH11_PIN 4
+DHT dht(DH11_PIN, DHT11);
+
+// Pin definitions
+#define SWITCH_PIN 15
+#define X_PIN 12
+#define Y_PIN 13
+#define Z_PIN 14
+#define LED_PIN 25
+#define BUZZER_PIN 26
+#define SOUND_SENSOR_PIN 34
+#define VIBRATION_SENSOR_PIN 35
+#define MQ2_PIN 36
+#define MQ135_PIN 39
+
+// Threshold values
+#define TEMP_THRESHOLD 35
+#define SOUND_THRESHOLD 5000
+#define VIBRATION_THRESHOLD 5000
+#define MQ2_THRESHOLD 3000
+#define MQ135_THRESHOLD 5000
+
+void setup() {
+  // Initialize Serial Monitor
+  Serial.begin(115200);
+  Serial.println("Initializing Smart Helmet...");
+
+  // Initialize GPS Serial
+  gpsSerial.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+
+  // Initialize DHT sensor
+  dht.begin();
+
+  // Initialize pins
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(SOUND_SENSOR_PIN, INPUT);
+  pinMode(VIBRATION_SENSOR_PIN, INPUT);
+  pinMode(MQ2_PIN, INPUT);
+  pinMode(MQ135_PIN, INPUT);
+
+  // Turn off LED and buzzer initially
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // Connect to Wi-Fi
+  connectToWiFi();
+
+  Serial.println("Smart Helmet Initialized");
+}
+
+void loop() {
+  bool alert = false;
+  String alertReason = "";
+
+  // Read temperature and humidity from DHT11
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  // Read gas/smoke levels from MQ-2
+  int mq2Value = analogRead(MQ2_PIN);
+
+  // Read air quality from MQ-135
+  int mq135Value = analogRead(MQ135_PIN);
+
+  // Read vibration sensor
+  int vibrationValue = analogRead(VIBRATION_SENSOR_PIN);
+
+  // Read sound sensor
+  int soundValue = analogRead(SOUND_SENSOR_PIN);
+
+  // Read accelerometer (GY-61)
+  int xValue = analogRead(X_PIN);
+  int yValue = analogRead(Y_PIN);
+  int zValue = analogRead(Z_PIN);
+
+  // Print all sensor values
+  Serial.println("Sensor Readings:");
+  Serial.printf("Temperature: %.2f °C\n", temperature);
+  Serial.printf("Humidity: %.2f %%\n", humidity);
+  Serial.printf("MQ-2 Gas/Smoke: %d\n", mq2Value);
+  Serial.printf("MQ-135 Air Quality: %d\n", mq135Value);
+  Serial.printf("Vibration: %d\n", vibrationValue);
+  Serial.printf("Sound: %d\n", soundValue);
+  Serial.printf("Accelerometer X: %d\n", xValue);
+  Serial.printf("Accelerometer Y: %d\n", yValue);
+  Serial.printf("Accelerometer Z: %d\n", zValue);
+
+  // Check for alert conditions
+  if (temperature > TEMP_THRESHOLD) {
+    alert = true;
+    alertReason += "High Temperature ";
+  }
+
+  if (mq2Value > MQ2_THRESHOLD) {
+    alert = true;
+    alertReason += "Gas/Smoke Detected ";
+  }
+
+  if (mq135Value > MQ135_THRESHOLD) {
+    alert = true;
+    alertReason += "Poor Air Quality ";
+  }
+
+  if (detectFall(vibrationValue, xValue, yValue, zValue, soundValue)) {
+    alert = true;
+    alertReason += "Fall Detected ";
+  }
+
+  if (soundValue > SOUND_THRESHOLD) {
+    alert = true;
+    alertReason += "Loud Noise Detected ";
+  }
+
+  // Check if push button is pressed for SOS
+  if (digitalRead(SWITCH_PIN) == LOW) {
+    alert = true;
+    alertReason += "SOS Button Pressed ";
+  }
+
+  // Handle alerts
+  if (alert) {
+    Serial.println("ALERT: " + alertReason);
+    blinkLEDAndSoundBuzzer();
+    getGPSLocation();
+  } else {
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  delay(500);
+}
+
+void blinkLEDAndSoundBuzzer() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(LED_PIN, LOW);
+    delay(500);
+  }
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+bool detectFall(int vibrationValue, int xValue, int yValue, int zValue, int soundValue) {
+  const int ACCELERATION_PEAK_THRESHOLD = 3000;
+  const int ACCELERATION_LOW_THRESHOLD = 500;
+  const int SOUND_PEAK_THRESHOLD = 600;
+
+  float accelerationMagnitude = sqrt(sq(xValue) + sq(yValue) + sq(zValue));
+  bool vibrationDetected = (vibrationValue > VIBRATION_THRESHOLD);
+  bool highAccelerationDetected = (accelerationMagnitude > ACCELERATION_PEAK_THRESHOLD);
+  bool lowAccelerationDetected = (accelerationMagnitude < ACCELERATION_LOW_THRESHOLD);
+  bool loudSoundDetected = (soundValue > SOUND_PEAK_THRESHOLD);
+
+  if (vibrationDetected && highAccelerationDetected && lowAccelerationDetected && loudSoundDetected) {
+    return true;
+  }
+  return false;
+}
+
+void connectToWiFi() {
+  Serial.print("Connecting to Wi-Fi");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWi-Fi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void getGPSLocation() {
+  while (gpsSerial.available() > 0) {
+    char c = gpsSerial.read();
+    gps.encode(c);
+
+    if (gps.location.isUpdated()) {
+      Serial.println("GPS Data:");
+      Serial.printf("Latitude: %.6f\n", gps.location.lat());
+      Serial.printf("Longitude: %.6f\n", gps.location.lng());
+      Serial.printf("Date: %d/%d/%d\n", gps.date.day(), gps.date.month(), gps.date.year());
+      Serial.printf("Time: %02d:%02d:%02d\n", gps.time.hour(), gps.time.minute(), gps.time.second());
+      break;
+    }
+  }
+}
